@@ -1,141 +1,83 @@
-import streamlit as st
-import numpy as np
-import tensorflow as tf
-from tensorflow import keras
-from PIL import Image
-from streamlit_drawable_canvas import st_canvas
+import base64
+import io
 import os
 
-st.set_page_config(
-    page_title="Detector de Dígitos MNIST",
-    page_icon="✍️",
-    layout="wide"
+import numpy as np
+import streamlit as st
+from openai import OpenAI
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
+
+MODELO = "gpt-4o-mini"  # si lee mal tu letra, prueba con "gpt-4o"
+
+PROMPT = (
+    "La imagen contiene una ecuación o ejercicio de matemáticas escrito a mano. "
+    "Responde en español y en este formato (usa LaTeX con $$...$$ para las fórmulas):\n"
+    "**Ecuación detectada:** transcríbela.\n"
+    "**Solución paso a paso:** pasos numerados y cortos.\n"
+    "**Resultado:** el resultado final.\n"
+    "Si no se entiende lo escrito, dilo y pide que lo dibuje más grande y claro."
 )
 
-# Mostrar versión en sidebar
+# Streamlit
+st.set_page_config(page_title="Ecuaciones a mano", page_icon="🧮")
+st.title("Ecuaciones a mano")
 with st.sidebar:
-    st.write(f"**TensorFlow:** {tf.__version__}")
-    st.write(f"**Keras:** {keras.__version__}")
+    st.subheader("Acerca de:")
+    st.subheader("Escribe una ecuación o ejercicio en el panel y la IA lo resuelve paso a paso.")
+    stroke_width = st.slider("Selecciona el ancho de línea", 1, 30, 4)
+st.subheader("Escribe la ecuación en el panel y presiona el botón para resolverla")
 
-st.title("✍️ Detección de Dígitos Escritos a Mano")
-st.markdown("**Modelo CNN entrenado en Google Colab con MNIST**")
+canvas_result = st_canvas(
+    fill_color="rgba(255, 165, 0, 0.3)",
+    stroke_width=stroke_width,
+    stroke_color="#000000",
+    background_color="#FFFFFF",
+    height=250,
+    width=600,
+    drawing_mode="freedraw",
+    key="canvas",
+)
 
-# Cargar modelo
-@st.cache_resource
-def load_mnist_model():
-    """Carga el modelo MNIST desde archivo .keras"""
-    
-    # Buscar archivo del modelo
-    model_files = ['mnist_model.keras', 'mnist_model.h5']
-    
-    for model_path in model_files:
-        if os.path.exists(model_path):
-            try:
-                st.info(f"📂 Intentando cargar: {model_path}")
-                model = keras.models.load_model(model_path)
-                st.success(f"✅ Modelo cargado exitosamente desde: `{model_path}`")
-                return model
-            except Exception as e:
-                st.error(f"❌ Error al cargar {model_path}: {str(e)}")
-                continue
-    
-    # Si no se encuentra el modelo
-    st.error("❌ No se encontró ningún modelo")
-    st.info("""
-    **Instrucciones:**
-    1. Entrena el modelo en Google Colab
-    2. Descarga `mnist_model.keras`
-    3. Súbelo a la raíz de tu repositorio
-    4. Reinicia la aplicación
-    """)
-    st.stop()
+# Clave: primero intenta st.secrets; si no hay, la pide en pantalla
+try:
+    api_key = st.secrets["OPENAI_API_KEY"]
+except Exception:
+    api_key = st.text_input("Ingresa tu Clave", type="password")
 
-# Cargar modelo
-model = load_mnist_model()
+analyze_button = st.button("Resolver ecuación", type="secondary")
 
-# Interfaz
-st.write("### 🎨 Dibuja un dígito del 0 al 9")
+if canvas_result.image_data is not None and api_key and analyze_button:
+    with st.spinner("Resolviendo ..."):
+        # Imagen del canvas sobre fondo blanco, codificada en base64
+        arr = np.array(canvas_result.image_data)
+        img = Image.fromarray(arr.astype("uint8"), "RGBA")
+        fondo = Image.new("RGB", img.size, "white")
+        fondo.paste(img, mask=img.split()[3])
+        buffer = io.BytesIO()
+        fondo.save(buffer, format="PNG")
+        base64_image = base64.b64encode(buffer.getvalue()).decode("utf-8")
 
-col1, col2 = st.columns([2, 1])
-
-with col1:
-    canvas_result = st_canvas(
-        fill_color="black",
-        stroke_width=20,
-        stroke_color="white",
-        background_color="black",
-        width=400,
-        height=400,
-        drawing_mode="freedraw",
-        key="canvas",
-    )
-
-with col2:
-    st.write("### 🎮 Controles")
-    predict_btn = st.button("🔍 **Predecir**", type="primary", use_container_width=True)
-    clear_btn = st.button("🗑️ Limpiar", use_container_width=True)
-    
-    if clear_btn:
-        st.rerun()
-
-# Predicción
-if predict_btn:
-    if canvas_result.image_data is not None:
-        if np.max(canvas_result.image_data) == 0:
-            st.warning("⚠️ Por favor, dibuja un dígito primero")
-        else:
-            with st.spinner("🤔 Analizando..."):
-                # Procesar imagen
-                image = Image.fromarray(
-                    canvas_result.image_data.astype("uint8")
-                ).convert("L")
-                
-                image_resized = image.resize((28, 28), Image.Resampling.LANCZOS)
-                img_array = np.array(image_resized) / 255.0
-                img_array = img_array.reshape(1, 28, 28, 1)
-                
-                # Predicción
-                prediction = model.predict(img_array, verbose=0)
-                digit = np.argmax(prediction)
-                confidence = np.max(prediction) * 100
-            
-            # Resultados
-            st.success(f"## 🎯 Dígito detectado: **{digit}**")
-            
-            col_m1, col_m2, col_m3 = st.columns(3)
-            with col_m1:
-                st.metric("Predicción", digit)
-            with col_m2:
-                st.metric("Confianza", f"{confidence:.1f}%")
-            with col_m3:
-                alternative = np.argsort(prediction[0])[-2]
-                st.metric("2ª opción", alternative)
-            
-            # Mostrar imágenes
-            st.write("### 🖼️ Procesamiento")
-            col_img1, col_img2 = st.columns(2)
-            
-            with col_img1:
-                st.write("**Tu dibujo original:**")
-                st.image(canvas_result.image_data, width=200)
-            
-            with col_img2:
-                st.write("**Imagen procesada (28x28):**")
-                st.image(image_resized, width=200)
-            
-            # Gráfico de probabilidades
-            st.write("### 📊 Probabilidades por dígito")
-            import pandas as pd
-            prob_df = pd.DataFrame({
-                'Dígito': [str(i) for i in range(10)],
-                'Probabilidad (%)': prediction[0] * 100
-            })
-            st.bar_chart(prob_df.set_index('Dígito'))
-            
-            with st.expander("🔍 Ver detalles"):
-                for i, prob in enumerate(prediction[0]):
-                    emoji = "🎯" if i == digit else ""
-                    st.write(f"{emoji} **Dígito {i}**: {prob*100:.2f}%")
-    else:
-        st.warning("⚠️ Por favor, dibuja un dígito en el canvas")
-
+        try:
+            client = OpenAI(api_key=api_key)
+            response = client.chat.completions.create(
+                model=MODELO,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": PROMPT},
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:image/png;base64,{base64_image}"},
+                            },
+                        ],
+                    }
+                ],
+                max_tokens=800,
+            )
+            st.markdown(response.choices[0].message.content)
+        except Exception as e:
+            st.error(f"Ocurrió un error: {e}")
+elif analyze_button and not api_key:
+    st.warning("Por favor ingresa tu API key.")
